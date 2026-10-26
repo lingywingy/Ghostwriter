@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+* Added an image editor to the rich text editor for censoring (black box, pixelate, blur) and highlighting (rectangle, arrow, pen) image evidence, either before uploading a pasted image or on evidence already in a finding; edits are flattened into the saved image and the original file is deleted
+* Added inline editing of evidence captions directly beneath evidence in the rich text editor
+
 ## [7.3.2] - 13 October 2026
 
 ### Fixed

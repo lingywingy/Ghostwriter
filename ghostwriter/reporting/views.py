@@ -1,6 +1,7 @@
 """This contains all the views used by the Reporting application."""
 
 # Standard Libraries
+import json
 import logging
 import os
 from datetime import datetime
@@ -30,6 +31,7 @@ from django.views.generic.edit import CreateView, DeleteView, UpdateView
 
 # 3rd Party Libraries
 from channels.layers import get_channel_layer
+from PIL import Image, UnidentifiedImageError
 
 # Ghostwriter Libraries
 from ghostwriter.api.utils import (
@@ -817,6 +819,99 @@ class EvidenceUpdate(RoleBasedAccessControlMixin, UpdateView):
             extra_tags="alert-success",
         )
         return res
+
+
+class EvidenceCaptionUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """
+    Update the caption of an individual :model:`reporting.Evidence` from the rich text editor
+    and return the result as JSON.
+    """
+
+    model = Evidence
+
+    def test_func(self):
+        return self.get_object().report.user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        return ForbiddenJsonResponse()
+
+    def post(self, *args, **kwargs):
+        obj = self.get_object()
+        if self.request.content_type == "application/json":
+            try:
+                caption = json.loads(self.request.body).get("caption")
+            except (ValueError, AttributeError):
+                return JsonResponse({"caption": ["Invalid request body."]}, status=400)
+        else:
+            caption = self.request.POST.get("caption")
+
+        if not isinstance(caption, str) or not caption.strip():
+            return JsonResponse({"caption": ["A caption is required."]}, status=400)
+        caption = caption.strip()
+        max_length = Evidence._meta.get_field("caption").max_length
+        if len(caption) > max_length:
+            return JsonResponse(
+                {"caption": [f"Captions must be {max_length} characters or fewer."]},
+                status=400,
+            )
+
+        obj.caption = caption
+        obj.save(update_fields=["caption"])
+        return JsonResponse({"pk": obj.pk, "caption": obj.caption})
+
+
+class EvidenceImageReplace(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """
+    Replace the image file of an individual :model:`reporting.Evidence` with an edited copy
+    (e.g., redacted or annotated in the rich text editor) and return the result as JSON.
+
+    The previous file is removed from disk so unredacted content does not linger.
+    """
+
+    model = Evidence
+    allowed_formats = {"PNG": "png", "JPEG": "jpg"}
+
+    def test_func(self):
+        return self.get_object().report.user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        return ForbiddenJsonResponse()
+
+    def post(self, *args, **kwargs):
+        obj = self.get_object()
+        if os.path.splitext(obj.document.name)[1].lower() not in (".png", ".jpg", ".jpeg"):
+            return JsonResponse({"document": ["Only image evidence can be edited."]}, status=400)
+
+        upload = self.request.FILES.get("document")
+        if upload is None:
+            return JsonResponse({"document": ["You must provide an image file."]}, status=400)
+
+        # Confirm the upload is really a PNG or JPEG instead of trusting the name or content type
+        try:
+            with Image.open(upload) as img:
+                img_format = img.format
+                img.verify()
+        except (UnidentifiedImageError, OSError, SyntaxError, ValueError):
+            return JsonResponse({"document": ["The uploaded file is not a valid image."]}, status=400)
+        if img_format not in self.allowed_formats:
+            return JsonResponse({"document": ["Images must be PNG or JPEG files."]}, status=400)
+        upload.seek(0)
+
+        old_name = obj.document.name
+        stem = os.path.splitext(os.path.basename(old_name))[0]
+        new_name = f"{stem}.{self.allowed_formats[img_format]}"
+        obj.document.save(new_name, File(upload), save=False)
+        obj.save(update_fields=["document", "upload_date"])
+
+        # The ``EvidenceUpdate`` Hasura event also removes the old file, but do it here, too, so a
+        # redacted image never leaves the original behind if the event is delayed or fails
+        if old_name and old_name != obj.document.name and obj.document.storage.exists(old_name):
+            try:
+                obj.document.storage.delete(old_name)
+            except OSError:  # pragma: no cover
+                logger.exception("Failed deleting replaced evidence file %s", old_name)
+
+        return JsonResponse({"pk": obj.pk, "document": obj.document.name})
 
 
 class EvidenceDelete(RoleBasedAccessControlMixin, DeleteView):
