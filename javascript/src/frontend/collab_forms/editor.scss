@@ -517,6 +517,26 @@
             color: var(--gw-danger, #c0392b);
             font-size: 0.875em;
         }
+        .richtext-evidence-size {
+            margin-top: 0.25rem;
+            font-size: 0.85em;
+            opacity: 0.8;
+        }
+        .richtext-evidence-size-editor {
+            font-size: 0.9em;
+
+            select {
+                width: auto;
+            }
+            input[type="number"] {
+                width: 6rem;
+            }
+        }
+        .richtext-evidence-size-help {
+            flex-basis: 100%;
+            opacity: 0.7;
+            font-size: 0.85em;
+        }
         .richtext-evidence-action {
             margin-top: 0.5rem;
             padding: 0.2rem 0.65rem;

@@ -1,7 +1,11 @@
 import { useQuery } from "@apollo/client";
 import { gql } from "../../__generated__/";
 import { useCallback, useMemo } from "react";
-import { Evidences, EvidencesContext } from "../../tiptap_gw/evidence";
+import {
+    Evidences,
+    EvidencesContext,
+    ReportWidthUnit,
+} from "../../tiptap_gw/evidence";
 import { Evidence_Bool_Exp } from "../../__generated__/graphql";
 import { parseEvidenceReportId } from "./evidence_metadata";
 import { getCsrfToken } from "../../services/csrf";
@@ -9,7 +13,7 @@ import { getCsrfToken } from "../../services/csrf";
 const QUERY_EVIDENCE = gql(`
     query QUERY_EVIDENCE($where: evidence_bool_exp!) {
         evidence(where:$where) {
-            id, caption, description, friendlyName, document
+            id, caption, description, friendlyName, document, reportWidthUnit, reportWidthValue
         }
     }
 `);
@@ -82,6 +86,18 @@ export function usePageEvidence(): Evidences | null {
         [poll]
     );
 
+    const updateReportSize = useCallback(
+        async (id: number, unit: ReportWidthUnit, value: number | null) => {
+            await postEvidenceChange(
+                `/reporting/reports/evidence/size/${id}`,
+                JSON.stringify({ unit, value }),
+                "application/json"
+            );
+            await poll();
+        },
+        [poll]
+    );
+
     const evidences = data?.evidence;
     if (evidences === null || evidences === undefined) return null;
 
@@ -94,6 +110,7 @@ export function usePageEvidence(): Evidences | null {
         poll,
         updateCaption,
         replaceImage,
+        updateReportSize,
     };
 }
 

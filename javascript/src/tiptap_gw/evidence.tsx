@@ -82,11 +82,15 @@ const Evidence = Node.create<EvidenceOptions>({
     },
 });
 
+export type ReportWidthUnit = "" | "percent" | "px";
+
 export type Evidence = {
     id: number;
     friendlyName: string;
     caption: string;
     document: string;
+    reportWidthUnit?: string;
+    reportWidthValue?: number | null;
 };
 
 export type Evidences = {
@@ -97,6 +101,12 @@ export type Evidences = {
     updateCaption?: (id: number, caption: string) => Promise<void>;
     /** Replace an image evidence's file with an edited copy. Rejects with a user-facing message on failure. */
     replaceImage?: (id: number, image: Blob) => Promise<void>;
+    /** Change how large an image evidence is in the report. Rejects with a user-facing message on failure. */
+    updateReportSize?: (
+        id: number,
+        unit: ReportWidthUnit,
+        value: number | null
+    ) => Promise<void>;
 };
 
 export const EvidencesContext = React.createContext<Evidences | null>(null);
@@ -152,6 +162,9 @@ function EvidenceView(props: NodeViewProps) {
     const editable = props.editor.isEditable;
     const replaceImage = ghostwriterEvidences?.replaceImage;
     const updateCaption = ghostwriterEvidences?.updateCaption;
+    const updateReportSize = ghostwriterEvidences?.updateReportSize;
+    const sizeUnit = normalizeUnit(evidence.reportWidthUnit);
+    const sizeValue = evidence.reportWidthValue ?? null;
 
     let preview = null;
     if (isImage) {
@@ -163,17 +176,39 @@ function EvidenceView(props: NodeViewProps) {
             encodeURIComponent(evidence.document);
         preview = (
             <>
-                <img src={url} onClick={() => setLightboxOpen(true)} />
+                <img
+                    src={url}
+                    style={{
+                        width: `${PREVIEW_WIDTH_PX * previewScale(sizeUnit, sizeValue)}px`,
+                    }}
+                    onClick={() => setLightboxOpen(true)}
+                />
                 {editable && replaceImage && (
                     <button
                         type="button"
                         className="richtext-evidence-action"
-                        title="Censor sensitive details or highlight areas of this image"
+                        title="Censor, highlight, or crop this image"
                         onClick={() => setAnnotatorOpen(true)}
                     >
                         <i className="fas fa-highlighter" aria-hidden="true" />{" "}
-                        Censor / highlight
+                        Edit image
                     </button>
+                )}
+                {editable && updateReportSize ? (
+                    <ReportSizeEditor
+                        unit={sizeUnit}
+                        value={sizeValue}
+                        onSave={(unit, value) =>
+                            updateReportSize(evidence.id, unit, value)
+                        }
+                    />
+                ) : (
+                    sizeUnit && (
+                        <span className="richtext-evidence-size">
+                            {"Report size: " +
+                                describeReportSize(sizeUnit, sizeValue)}
+                        </span>
+                    )
                 )}
                 <ReactModal
                     isOpen={lightboxOpen}
@@ -186,7 +221,7 @@ function EvidenceView(props: NodeViewProps) {
                 {annotatorOpen && replaceImage && (
                     <ImageAnnotator
                         source={url}
-                        title={"Censor and highlight " + evidence.friendlyName}
+                        title={"Edit " + evidence.friendlyName}
                         saveLabel="Replace evidence image"
                         notice={
                             <>
@@ -228,6 +263,195 @@ function EvidenceView(props: NodeViewProps) {
                 </span>
             )}
         </NodeViewWrapper>
+    );
+}
+
+/** Width of the image thumbnail in the editor when it fills the report's evidence width. */
+const PREVIEW_WIDTH_PX = 300;
+/**
+ * Pixels for the default 6.5" evidence width at 96 DPI. Templates can use another width,
+ * so pixel sizes are only previewed approximately.
+ */
+const DEFAULT_REPORT_WIDTH_PX = 6.5 * 96;
+
+function normalizeUnit(unit: string | undefined): ReportWidthUnit {
+    return unit === "percent" || unit === "px" ? unit : "";
+}
+
+/** Fraction of the full evidence width the image will take in the report. */
+function previewScale(unit: ReportWidthUnit, value: number | null): number {
+    if (!unit || !value) return 1;
+    const fraction =
+        unit === "percent" ? value / 100 : value / DEFAULT_REPORT_WIDTH_PX;
+    return Math.max(0.05, Math.min(1, fraction));
+}
+
+function describeReportSize(
+    unit: ReportWidthUnit,
+    value: number | null
+): string {
+    if (!unit || !value) return "full width";
+    return unit === "percent" ? `${value}% width` : `${value} px wide`;
+}
+
+/** Click-to-edit control for how large an image appears in the generated report. */
+function ReportSizeEditor(props: {
+    unit: ReportWidthUnit;
+    value: number | null;
+    onSave: (unit: ReportWidthUnit, value: number | null) => Promise<void>;
+}) {
+    const [editing, setEditing] = useState(false);
+    const [unit, setUnit] = useState<ReportWidthUnit>(props.unit);
+    const [value, setValue] = useState(
+        props.value === null ? "" : String(props.value)
+    );
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    // Pick up changes made by collaborators or on the evidence page while not editing
+    useEffect(() => {
+        if (editing) return;
+        setUnit(props.unit);
+        setValue(props.value === null ? "" : String(props.value));
+    }, [props.unit, props.value, editing]);
+
+    const cancel = () => {
+        setUnit(props.unit);
+        setValue(props.value === null ? "" : String(props.value));
+        setError(null);
+        setEditing(false);
+    };
+
+    const commit = async () => {
+        let parsed: number | null = null;
+        if (unit) {
+            parsed = Number(value);
+            if (!Number.isInteger(parsed) || parsed < 1) {
+                setError("Enter a whole number greater than zero.");
+                return;
+            }
+            if (unit === "percent" && parsed > 100) {
+                setError("Percentages must be between 1 and 100.");
+                return;
+            }
+        }
+        if (unit === props.unit && parsed === props.value) {
+            cancel();
+            return;
+        }
+        setSaving(true);
+        setError(null);
+        try {
+            await props.onSave(unit, parsed);
+            setEditing(false);
+        } catch (err) {
+            setError(
+                err instanceof Error ? err.message : "Could not save the size."
+            );
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    if (!editing) {
+        return (
+            <button
+                type="button"
+                className="richtext-evidence-size richtext-evidence-caption-button"
+                title="Change how large this image is in the report"
+                onClick={() => setEditing(true)}
+            >
+                {"Report size: " + describeReportSize(props.unit, props.value)}
+                <i
+                    className="fas fa-pencil-alt richtext-evidence-caption-icon"
+                    aria-hidden="true"
+                />
+                <span className="visually-hidden"> (edit report size)</span>
+            </button>
+        );
+    }
+
+    return (
+        <span
+            className="richtext-evidence-caption-editor richtext-evidence-size-editor"
+            onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                    e.preventDefault();
+                    commit();
+                } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancel();
+                }
+            }}
+        >
+            <span className="richtext-evidence-caption-prefix">
+                Report size:
+            </span>
+            <select
+                className="form-select form-select-sm"
+                aria-label="Report size unit"
+                value={unit}
+                disabled={saving}
+                onChange={(e) => {
+                    const next = normalizeUnit(e.target.value);
+                    setUnit(next);
+                    if (next === "percent" && !value) setValue("50");
+                }}
+            >
+                <option value="">Full width</option>
+                <option value="percent">Percent of width</option>
+                <option value="px">Width in pixels</option>
+            </select>
+            {unit && (
+                <input
+                    type="number"
+                    className={
+                        "form-control form-control-sm" +
+                        (error ? " is-invalid" : "")
+                    }
+                    aria-label={
+                        unit === "percent"
+                            ? "Percent of width"
+                            : "Width in pixels"
+                    }
+                    min={1}
+                    max={unit === "percent" ? 100 : undefined}
+                    step={1}
+                    value={value}
+                    disabled={saving}
+                    autoFocus
+                    onChange={(e) => setValue(e.target.value)}
+                />
+            )}
+            <button
+                type="button"
+                className="btn btn-sm btn-outline-secondary"
+                disabled={saving}
+                onClick={cancel}
+            >
+                Cancel
+            </button>
+            <button
+                type="button"
+                className="btn btn-sm gw-evidence-primary-action"
+                disabled={saving}
+                onClick={commit}
+            >
+                {saving ? (
+                    <i className="fas fa-spinner fa-spin" aria-hidden="true" />
+                ) : (
+                    "Apply"
+                )}
+            </button>
+            <span className="richtext-evidence-size-help">
+                The aspect ratio is kept, and images are never enlarged.
+            </span>
+            {error && (
+                <span className="richtext-evidence-caption-error" role="alert">
+                    {error}
+                </span>
+            )}
+        </span>
     );
 }
 

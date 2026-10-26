@@ -290,11 +290,12 @@ function FileInput(props: {
                         onClick={() => setAnnotatorOpen(true)}
                     >
                         <i className="fas fa-highlighter" aria-hidden="true" />
-                        Censor / highlight before uploading
+                        Edit image before uploading
                     </button>
                     <small className="form-text text-muted">
-                        Edits are applied before upload, so the original image
-                        never leaves your browser.
+                        Censor, highlight, or crop it first. Edits are applied
+                        before upload, so the original image never leaves your
+                        browser.
                     </small>
                 </div>
             )}

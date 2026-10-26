@@ -2,6 +2,7 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { IconDefinition } from "@fortawesome/fontawesome-svg-core";
 import { faSquare as faSquareOutline } from "@fortawesome/free-regular-svg-icons/faSquare";
 import { faArrowRightLong } from "@fortawesome/free-solid-svg-icons/faArrowRightLong";
+import { faCropSimple } from "@fortawesome/free-solid-svg-icons/faCropSimple";
 import { faDroplet } from "@fortawesome/free-solid-svg-icons/faDroplet";
 import { faPen } from "@fortawesome/free-solid-svg-icons/faPen";
 import { faRotateLeft } from "@fortawesome/free-solid-svg-icons/faRotateLeft";
@@ -12,18 +13,28 @@ import { faTrashCan } from "@fortawesome/free-solid-svg-icons/faTrashCan";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import ReactModal from "react-modal";
 import {
+    activeCrop,
     AnnotationOp,
     defaultStrokeWidth,
+    drawCropOverlay,
     drawOp,
     renderImage,
     Tool,
 } from "./render";
 
+type ToolGroup = "censor" | "highlight" | "adjust";
+
+const GROUP_LABELS: Record<ToolGroup, string> = {
+    censor: "Censor",
+    highlight: "Highlight",
+    adjust: "Adjust",
+};
+
 const TOOLS: {
     tool: Tool;
     label: string;
     icon: IconDefinition;
-    group: "censor" | "highlight";
+    group: ToolGroup;
 }[] = [
     { tool: "blackout", label: "Black box", icon: faSquare, group: "censor" },
     {
@@ -46,16 +57,17 @@ const TOOLS: {
         group: "highlight",
     },
     { tool: "pen", label: "Pen", icon: faPen, group: "highlight" },
+    { tool: "crop", label: "Crop", icon: faCropSimple, group: "adjust" },
 ];
 
 const COLORS = ["#e00000", "#ff9500", "#ffd400", "#00b050", "#0070c0"];
 
 /**
- * Modal for censoring (black box, pixelate, blur) and highlighting (rectangle, arrow, pen)
- * an image before it's used as report evidence.
+ * Modal for censoring (black box, pixelate, blur), highlighting (rectangle, arrow, pen),
+ * and cropping an image before it's used as report evidence.
  *
  * All edits are flattened into the pixels of the exported PNG, so censored content
- * cannot be recovered by removing an overlay.
+ * cannot be recovered by removing an overlay, and cropped-out areas are not kept.
  */
 export default function ImageAnnotator(props: {
     /** URL or file of the image to edit */
@@ -108,7 +120,7 @@ export default function ImageAnnotator(props: {
         const ctx = canvas.getContext("2d")!;
         ctx.drawImage(committed, 0, 0);
         const draft = draftRef.current;
-        if (draft) {
+        if (draft && draft.kind !== "crop") {
             drawOp(ctx, draft);
             if (
                 draft.kind === "blackout" ||
@@ -129,7 +141,10 @@ export default function ImageAnnotator(props: {
                 ctx.restore();
             }
         }
-    }, [strokeWidth]);
+        // Keep showing the whole image so a crop can be redrawn, but dim what will be cut
+        const crop = draft?.kind === "crop" ? draft : activeCrop(ops);
+        if (crop) drawCropOverlay(ctx, crop, strokeWidth);
+    }, [strokeWidth, ops]);
 
     // Re-render the committed layer whenever the op list changes
     useEffect(() => {
@@ -245,7 +260,7 @@ export default function ImageAnnotator(props: {
         setSaving(true);
         setSaveError(null);
         try {
-            const output = renderImage(image, ops);
+            const output = renderImage(image, ops, true);
             const blob = await new Promise<Blob>((resolve, reject) =>
                 output.toBlob(
                     (b) =>
@@ -265,8 +280,18 @@ export default function ImageAnnotator(props: {
         }
     };
 
-    const selectedIsCensor =
-        TOOLS.find((t) => t.tool === tool)?.group === "censor";
+    const selectedGroup = TOOLS.find((t) => t.tool === tool)?.group;
+    const selectedIsCensor = selectedGroup === "censor";
+
+    const crop = activeCrop(ops);
+    const outputSize = !image
+        ? null
+        : crop
+          ? {
+                width: Math.round(Math.abs(crop.x1 - crop.x0)),
+                height: Math.round(Math.abs(crop.y1 - crop.y0)),
+            }
+          : { width: image.naturalWidth, height: image.naturalHeight };
 
     return (
         <ReactModal
@@ -286,7 +311,7 @@ export default function ImageAnnotator(props: {
                             Report evidence
                         </span>
                         <h5 className="modal-title">
-                            {props.title ?? "Censor and highlight image"}
+                            {props.title ?? "Edit image"}
                         </h5>
                     </div>
                     <button
@@ -301,37 +326,39 @@ export default function ImageAnnotator(props: {
                 </div>
 
                 <div className="gw-image-annotator-toolbar" role="toolbar">
-                    {(["censor", "highlight"] as const).map((group) => (
-                        <div
-                            key={group}
-                            className="gw-image-annotator-group"
-                            role="group"
-                            aria-label={
-                                group === "censor" ? "Censor" : "Highlight"
-                            }
-                        >
-                            <span className="gw-image-annotator-group-label">
-                                {group === "censor" ? "Censor" : "Highlight"}
-                            </span>
-                            {TOOLS.filter((t) => t.group === group).map((t) => (
-                                <button
-                                    key={t.tool}
-                                    type="button"
-                                    title={t.label}
-                                    aria-label={t.label}
-                                    aria-pressed={tool === t.tool}
-                                    className={
-                                        tool === t.tool
-                                            ? "is-active"
-                                            : undefined
-                                    }
-                                    onClick={() => setTool(t.tool)}
-                                >
-                                    <FontAwesomeIcon icon={t.icon} />
-                                </button>
-                            ))}
-                        </div>
-                    ))}
+                    {(["censor", "highlight", "adjust"] as const).map(
+                        (group) => (
+                            <div
+                                key={group}
+                                className="gw-image-annotator-group"
+                                role="group"
+                                aria-label={GROUP_LABELS[group]}
+                            >
+                                <span className="gw-image-annotator-group-label">
+                                    {GROUP_LABELS[group]}
+                                </span>
+                                {TOOLS.filter((t) => t.group === group).map(
+                                    (t) => (
+                                        <button
+                                            key={t.tool}
+                                            type="button"
+                                            title={t.label}
+                                            aria-label={t.label}
+                                            aria-pressed={tool === t.tool}
+                                            className={
+                                                tool === t.tool
+                                                    ? "is-active"
+                                                    : undefined
+                                            }
+                                            onClick={() => setTool(t.tool)}
+                                        >
+                                            <FontAwesomeIcon icon={t.icon} />
+                                        </button>
+                                    )
+                                )}
+                            </div>
+                        )
+                    )}
                     <div
                         className="gw-image-annotator-group"
                         role="group"
@@ -344,7 +371,7 @@ export default function ImageAnnotator(props: {
                                 title={"Color " + c}
                                 aria-label={"Color " + c}
                                 aria-pressed={color === c}
-                                disabled={selectedIsCensor}
+                                disabled={selectedGroup !== "highlight"}
                                 className={
                                     "gw-image-annotator-swatch" +
                                     (color === c ? " is-active" : "")
@@ -415,7 +442,21 @@ export default function ImageAnnotator(props: {
 
                 <div className="modal-footer gw-evidence-dialog-footer gw-image-annotator-footer">
                     <p className="gw-image-annotator-hint">
-                        {selectedIsCensor && tool !== "blackout" ? (
+                        {tool === "crop" ? (
+                            <>
+                                Drag to choose the area to keep. Drag again to
+                                change it, or undo to remove it.
+                                {outputSize && (
+                                    <>
+                                        {" "}
+                                        <strong>
+                                            {outputSize.width} ×{" "}
+                                            {outputSize.height} px
+                                        </strong>
+                                    </>
+                                )}
+                            </>
+                        ) : selectedIsCensor && tool !== "blackout" ? (
                             <>
                                 <strong>Tip:</strong> blurred or pixelated text
                                 can sometimes be reconstructed. Use{" "}

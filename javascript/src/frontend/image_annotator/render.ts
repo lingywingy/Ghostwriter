@@ -1,9 +1,17 @@
-export type Tool = "blackout" | "pixelate" | "blur" | "rect" | "arrow" | "pen";
+export type Tool =
+    | "blackout"
+    | "pixelate"
+    | "blur"
+    | "rect"
+    | "arrow"
+    | "pen"
+    | "crop";
 
-type Region = { x0: number; y0: number; x1: number; y1: number };
+export type Region = { x0: number; y0: number; x1: number; y1: number };
 
 export type AnnotationOp =
     | ({ kind: "blackout" | "pixelate" | "blur" } & Region)
+    | ({ kind: "crop" } & Region)
     | ({ kind: "rect" | "arrow"; color: string; width: number } & Region)
     | {
           kind: "pen";
@@ -22,10 +30,27 @@ export function pixelBlockSize(width: number, height: number): number {
     return Math.max(10, Math.round(Math.min(width, height) / 50));
 }
 
-/** Render the image with every op applied, at the image's natural size. */
+/** The crop region in effect, if any. Each new crop replaces the previous one. */
+export function activeCrop(
+    ops: readonly AnnotationOp[]
+): (Region & { kind: "crop" }) | null {
+    for (let i = ops.length - 1; i >= 0; i--) {
+        const op = ops[i];
+        if (op.kind === "crop") return op;
+    }
+    return null;
+}
+
+/**
+ * Render the image with every op applied, at the image's natural size.
+ *
+ * Crops are left out unless `applyCrop` is set, so the editor can keep showing the
+ * whole image while a crop is pending.
+ */
 export function renderImage(
     image: CanvasImageSource & { naturalWidth: number; naturalHeight: number },
-    ops: readonly AnnotationOp[]
+    ops: readonly AnnotationOp[],
+    applyCrop = false
 ): HTMLCanvasElement {
     const canvas = document.createElement("canvas");
     canvas.width = image.naturalWidth;
@@ -33,7 +58,37 @@ export function renderImage(
     const ctx = canvas.getContext("2d")!;
     ctx.drawImage(image, 0, 0);
     for (const op of ops) drawOp(ctx, op);
-    return canvas;
+
+    const crop = applyCrop ? activeCrop(ops) : null;
+    if (!crop) return canvas;
+    const { x, y, w, h } = normalize(crop, canvas);
+    if (w < 1 || h < 1) return canvas;
+    const cropped = document.createElement("canvas");
+    cropped.width = w;
+    cropped.height = h;
+    cropped.getContext("2d")!.drawImage(canvas, x, y, w, h, 0, 0, w, h);
+    return cropped;
+}
+
+/** Dim everything outside `region` and outline it, to preview a crop. */
+export function drawCropOverlay(
+    ctx: CanvasRenderingContext2D,
+    region: Region,
+    lineWidth: number
+) {
+    const { x, y, w, h } = normalize(region, ctx.canvas);
+    const { width, height } = ctx.canvas;
+    ctx.save();
+    ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+    ctx.beginPath();
+    ctx.rect(0, 0, width, height);
+    ctx.rect(x, y, w, h);
+    ctx.fill("evenodd");
+    ctx.setLineDash([lineWidth * 2, lineWidth * 2]);
+    ctx.lineWidth = Math.max(1, lineWidth / 2);
+    ctx.strokeStyle = "#fff";
+    ctx.strokeRect(x, y, w, h);
+    ctx.restore();
 }
 
 /** Apply a single op on top of whatever is currently drawn in `ctx`. */
@@ -56,6 +111,9 @@ export function drawOp(ctx: CanvasRenderingContext2D, op: AnnotationOp) {
         }
         case "arrow":
             drawArrow(ctx, op);
+            break;
+        case "crop":
+            // Applied by `renderImage` once every other op is drawn
             break;
         case "pen":
             ctx.save();

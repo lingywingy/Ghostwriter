@@ -12,6 +12,7 @@ from os.path import exists
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
+from django.core.exceptions import ValidationError
 from django.core.files import File
 from django.db import transaction
 from django.http import (
@@ -51,6 +52,7 @@ from ghostwriter.reporting.forms import (
 )
 from ghostwriter.reporting.models import (
     Evidence,
+    EvidenceReportWidthUnit,
     FindingNote,
     LocalFindingNote,
     Report,
@@ -858,6 +860,54 @@ class EvidenceCaptionUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, View
         obj.caption = caption
         obj.save(update_fields=["caption"])
         return JsonResponse({"pk": obj.pk, "caption": obj.caption})
+
+
+class EvidenceReportSizeUpdate(RoleBasedAccessControlMixin, SingleObjectMixin, View):
+    """
+    Update how large an individual :model:`reporting.Evidence` image appears in generated reports
+    from the rich text editor and return the result as JSON.
+
+    Expects JSON with ``unit`` (``percent``, ``px``, or an empty string for the full evidence width)
+    and ``value``.
+    """
+
+    model = Evidence
+
+    def test_func(self):
+        return self.get_object().report.user_can_edit(self.request.user)
+
+    def handle_no_permission(self):
+        return ForbiddenJsonResponse()
+
+    def post(self, *args, **kwargs):
+        obj = self.get_object()
+        try:
+            data = json.loads(self.request.body)
+            unit = data.get("unit") or ""
+            value = data.get("value")
+        except (ValueError, AttributeError):
+            return JsonResponse({"report_width_value": ["Invalid request body."]}, status=400)
+
+        if unit not in EvidenceReportWidthUnit.values and unit != "":
+            return JsonResponse({"report_width_unit": ["Choose percent or pixels."]}, status=400)
+        if unit and (isinstance(value, bool) or not isinstance(value, int)):
+            return JsonResponse({"report_width_value": ["Enter a whole number."]}, status=400)
+
+        obj.report_width_unit = unit
+        obj.report_width_value = value if unit else None
+        try:
+            obj.full_clean(exclude=["document", "tags", "report", "uploaded_by"])
+        except ValidationError as err:
+            return JsonResponse(err.message_dict, status=400)
+
+        obj.save(update_fields=["report_width_unit", "report_width_value"])
+        return JsonResponse(
+            {
+                "pk": obj.pk,
+                "report_width_unit": obj.report_width_unit,
+                "report_width_value": obj.report_width_value,
+            }
+        )
 
 
 class EvidenceImageReplace(RoleBasedAccessControlMixin, SingleObjectMixin, View):

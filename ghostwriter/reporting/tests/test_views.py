@@ -4342,6 +4342,100 @@ class EvidenceCaptionUpdateViewTests(TestCase):
         self.assertEqual(response.status_code, 405)
 
 
+class EvidenceReportSizeUpdateViewTests(TestCase):
+    """Collection of tests for :view:`reporting.EvidenceReportSizeUpdate`."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.evidence = EvidenceFactory()
+        cls.user = UserFactory(password=PASSWORD)
+        cls.mgr_user = UserFactory(password=PASSWORD, role="manager")
+        cls.uri = reverse(
+            "reporting:evidence_report_size_update", kwargs={"pk": cls.evidence.pk}
+        )
+
+    def setUp(self):
+        self.client = Client()
+        self.client_auth = Client()
+        self.client_mgr = Client()
+        self.assertTrue(
+            self.client_auth.login(username=self.user.username, password=PASSWORD)
+        )
+        self.assertTrue(
+            self.client_mgr.login(username=self.mgr_user.username, password=PASSWORD)
+        )
+
+    def post_json(self, client, data):
+        return client.post(self.uri, data=json.dumps(data), content_type="application/json")
+
+    def test_view_requires_login_and_permissions(self):
+        data = {"unit": "percent", "value": 50}
+        response = self.post_json(self.client, data)
+        self.assertEqual(response.status_code, 302)
+
+        response = self.post_json(self.client_auth, data)
+        self.assertEqual(response.status_code, 403)
+
+        ProjectAssignmentFactory(
+            operator=self.user, project=self.evidence.report.project
+        )
+        response = self.post_json(self.client_auth, data)
+        self.assertEqual(response.status_code, 200)
+
+    def test_sets_and_clears_size(self):
+        response = self.post_json(self.client_mgr, {"unit": "percent", "value": 40})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["report_width_unit"], "percent")
+        self.evidence.refresh_from_db()
+        self.assertEqual(
+            (self.evidence.report_width_unit, self.evidence.report_width_value),
+            ("percent", 40),
+        )
+
+        response = self.post_json(self.client_mgr, {"unit": "px", "value": 640})
+        self.assertEqual(response.status_code, 200)
+        self.evidence.refresh_from_db()
+        self.assertEqual(
+            (self.evidence.report_width_unit, self.evidence.report_width_value),
+            ("px", 640),
+        )
+
+        response = self.post_json(self.client_mgr, {"unit": "", "value": 640})
+        self.assertEqual(response.status_code, 200)
+        self.evidence.refresh_from_db()
+        self.assertEqual(
+            (self.evidence.report_width_unit, self.evidence.report_width_value),
+            ("", None),
+        )
+
+    def test_rejects_invalid_sizes(self):
+        for data in (
+            {"unit": "percent", "value": 0},
+            {"unit": "percent", "value": 101},
+            {"unit": "percent", "value": "50"},
+            {"unit": "percent", "value": 12.5},
+            {"unit": "px", "value": True},
+            {"unit": "px"},
+            {"unit": "inches", "value": 2},
+        ):
+            with self.subTest(data=data):
+                response = self.post_json(self.client_mgr, data)
+                self.assertEqual(response.status_code, 400)
+
+        response = self.client_mgr.post(
+            self.uri, data="not json", content_type="application/json"
+        )
+        self.assertEqual(response.status_code, 400)
+
+        self.evidence.refresh_from_db()
+        self.assertEqual(self.evidence.report_width_unit, "")
+        self.assertIsNone(self.evidence.report_width_value)
+
+    def test_rejects_get(self):
+        response = self.client_mgr.get(self.uri)
+        self.assertEqual(response.status_code, 405)
+
+
 class EvidenceImageReplaceViewTests(TestCase):
     """Collection of tests for :view:`reporting.EvidenceImageReplace`."""
 
